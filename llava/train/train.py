@@ -446,7 +446,9 @@ def preprocess_llama_3(
         ).input_ids
 
     targets = input_ids.clone()
-
+    
+    offset = 0 if input_ids[0][0] != tokenizer.bos_token_id else 1
+    
     assert conv.sep_style == conversation_lib.SeparatorStyle.TWO
     # Mask targets
     sep = conv.sep + conv.roles[1] + ":"
@@ -457,7 +459,8 @@ def preprocess_llama_3(
         total_len = int(target.ne(tokenizer.pad_token_id).sum())
 
         rounds = conversation.split(conv.sep2)
-        cur_len = 0
+        cur_len = 1
+        target[:cur_len] = IGNORE_INDEX
         
         for i, rou in enumerate(rounds):
             if rou == "":
@@ -470,14 +473,14 @@ def preprocess_llama_3(
 
             if has_image:
                 round_len = len(tokenizer_image_token(rou, tokenizer))
-                instruction_len = len(tokenizer_image_token(parts[0], tokenizer))
+                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - offset
             else:
                 round_len = len(tokenizer(rou).input_ids)
-                instruction_len = len(tokenizer(parts[0]).input_ids)
+                instruction_len = len(tokenizer(parts[0]).input_ids) - offset
 
             target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
 
-            cur_len += round_len + 1 #starting from index 0, then cur_len will not cover eos token
+            cur_len += round_len + (1 - offset) #starting from index 0, then cur_len will not cover eos token
 
         if cur_len < tokenizer.model_max_length:
             if cur_len != total_len:
@@ -669,6 +672,106 @@ def preprocess_mpt(
         labels=targets,
     )
 
+def preprocess_phi_3(
+    sources,
+    tokenizer: transformers.PreTrainedTokenizer,
+    has_image: bool = False
+) -> Dict:
+    conv = conversation_lib.conv_phi_3_instruct.copy()
+    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+    # Apply prompt templates
+    conversations = []
+    for i, source in enumerate(sources):
+        if roles[source[0]["from"]] != conv.roles[0]:
+            # Skip the first one if it is not from human
+            source = source[1:]
+
+        conv.messages = []
+        for j, sentence in enumerate(source):
+            role = roles[sentence["from"]]
+            assert role == conv.roles[j % 2], f"{i}"
+            conv.append_message(role, sentence["value"])
+        conversations.append(conv.get_prompt())
+
+    # Tokenize conversations
+
+    if has_image:
+        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+    else:
+        input_ids = tokenizer(
+            conversations,
+            return_tensors="pt",
+            padding="longest",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+        ).input_ids
+
+    targets = input_ids.clone()
+
+    # Mask targets
+    sep = conv.sep + conv.roles[1]
+    # Llama3 tokenizer has the token for whitespace
+    # Typically, the token after whitespace will be naturally encoded as one token with whitespace
+    # some special cases like ": 3" will be encoded as :, whitespace, 3; 3 tokens. Only in this case, the loss on whitespace will be calculated
+    for conversation, target in zip(conversations, targets):
+        total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+        rounds = conversation.split(conv.sep)
+        re_rounds = []
+        for conv_idx in range(0, len(rounds), 2):
+            re_rounds.append(conv.sep.join(rounds[conv_idx:conv_idx+2]))    # user + gpt
+
+        cur_len = 1
+        target[:cur_len] = IGNORE_INDEX
+
+        for i, rou in enumerate(re_rounds):
+            if rou == "":
+                break
+
+            parts = rou.split(sep)
+            if len(parts) != 2:
+                break
+            parts[0] += sep
+
+            if has_image:
+                round_len = len(tokenizer_image_token(rou, tokenizer)) - 1
+                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
+            else:
+                round_len = len(tokenizer(rou).input_ids) - 1
+                instruction_len = len(tokenizer(parts[0]).input_ids) - 1
+            
+            if i != 0 and not tokenizer.legacy and IS_TOKENIZER_GREATER_THAN_0_14:
+                round_len -= 1
+                instruction_len -= 1
+            
+            target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
+
+            cur_len += round_len + 2 #<|end|>\n are 2 tokens
+
+            # target[cur_len - 1] = IGNORE_INDEX
+
+        if cur_len < tokenizer.model_max_length:
+            if cur_len != total_len:
+                target[:] = IGNORE_INDEX
+                print(
+                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                    f" (ignored)"
+                )
+
+    if input_ids[0][0] != tokenizer.bos_token_id:
+        input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
+        targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
+    
+    # if input_ids[0][-1] != tokenizer.eos_token_id:
+    #     input_ids = [torch.cat([i, torch.LongTensor([tokenizer.bos_token_id])]) for i in input_ids]
+    #     targets = [torch.cat([i, torch.LongTensor([IGNORE_INDEX])]) for i in targets]
+    
+    return dict(
+        input_ids=input_ids,
+        labels=targets,
+    )
+
 
 def preprocess_plain(
     sources: Sequence[str],
@@ -718,6 +821,8 @@ def preprocess(
         return preprocess_llama_3(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version == "mpt":
         return preprocess_mpt(sources, tokenizer, has_image=has_image)
+    if conversation_lib.default_conversation.version == "phi":
+        return preprocess_phi_3(sources, tokenizer, has_image=has_image)
     # add end signal and concatenate together
     conversations = []
     for source in sources:
@@ -870,6 +975,7 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
     train_dataset = LazySupervisedDataset(tokenizer=tokenizer,
                                 data_path=data_args.data_path,
                                 data_args=data_args)
+    # print(train_dataset[1])
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=train_dataset,
                 eval_dataset=None,
@@ -912,6 +1018,14 @@ def train(attn_implementation=None):
                 model_args.model_name_or_path,
                 config=config,
                 cache_dir=training_args.cache_dir,
+                **bnb_model_from_pretrained_args
+            )
+        elif 'phi-3' in model_args.model_name_or_path.lower():
+            model = LlavaPhi3ForCausalLM.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                attn_implementation=attn_implementation,
+                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
                 **bnb_model_from_pretrained_args
             )
         else:
@@ -994,8 +1108,11 @@ def train(attn_implementation=None):
     elif model_args.version == "v3":
         tokenizer.pad_token = "<|reserved_special_token_0|>" # only for llama3
         conversation_lib.default_conversation = conversation_lib.conv_templates["llama_3"]
+    elif model_args.version == "phi_3_instruct":
+        tokenizer.pad_token = tokenizer.unk_token
+        conversation_lib.default_conversation = conversation_lib.conv_templates[model_args.version]
     else:
-        tokenizer.pad_token = "<|reserved_special_token_0|>" if not "Llama-3" in model_args.model_name_or_path else tokenizer.eos_token
+        tokenizer.pad_token = "<|reserved_special_token_0|>" if not "llama-3" in model_args.model_name_or_path.lower() else tokenizer.unk_token
         if model_args.version in conversation_lib.conv_templates:
             conversation_lib.default_conversation = conversation_lib.conv_templates[model_args.version]
         else:
