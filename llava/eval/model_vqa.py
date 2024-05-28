@@ -37,7 +37,8 @@ def eval_model(args):
     questions = get_chunk(questions, args.num_chunks, args.chunk_idx)
     answers_file = os.path.expanduser(args.answers_file)
     os.makedirs(os.path.dirname(answers_file), exist_ok=True)
-    ans_file = open(answers_file, "w")
+    res_list = []
+    # ans_file = open(answers_file, "w")
     for line in tqdm(questions):
         idx = line["question_id"]
         image_file = line["image"]
@@ -69,19 +70,24 @@ def eval_model(args):
                 num_beams=args.num_beams,
                 # no_repeat_ngram_size=3,
                 max_new_tokens=1024,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=128002)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
         ans_id = shortuuid.uuid()
-        ans_file.write(json.dumps({"question_id": idx,
+        # ans_file.write(json.dumps(
+        res_list.append({"question_id": idx,
                                    "prompt": cur_prompt,
                                    "text": outputs,
                                    "answer_id": ans_id,
                                    "model_id": model_name,
-                                   "metadata": {}}) + "\n")
-        ans_file.flush()
-    ans_file.close()
+                                   "metadata": {}})# + "\n")
+        # ans_file.flush()
+    # ans_file.close()
+    with open(answers_file, "w") as ans_file:
+        for res in res_list:
+            ans_file.write(json.dumps(res)+"\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

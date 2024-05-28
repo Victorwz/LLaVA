@@ -718,13 +718,17 @@ def preprocess_phi_3(
         total_len = int(target.ne(tokenizer.pad_token_id).sum())
 
         rounds = conversation.split(conv.sep)
-        re_rounds = []
-        for conv_idx in range(0, len(rounds), 2):
+        # re_rounds = []
+        # for conv_idx in range(0, len(rounds), 2):
+        #     re_rounds.append(conv.sep.join(rounds[conv_idx:conv_idx+2]))    # user + gpt
+
+        re_rounds = [conv.sep.join(rounds[:3])] # system + user + gpt
+        for conv_idx in range(3, len(rounds), 2):
             re_rounds.append(conv.sep.join(rounds[conv_idx:conv_idx+2]))    # user + gpt
 
         cur_len = 1
         target[:cur_len] = IGNORE_INDEX
-
+        
         for i, rou in enumerate(re_rounds):
             if rou == "":
                 break
@@ -762,10 +766,6 @@ def preprocess_phi_3(
     if input_ids[0][0] != tokenizer.bos_token_id:
         input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
         targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
-    
-    # if input_ids[0][-1] != tokenizer.eos_token_id:
-    #     input_ids = [torch.cat([i, torch.LongTensor([tokenizer.bos_token_id])]) for i in input_ids]
-    #     targets = [torch.cat([i, torch.LongTensor([IGNORE_INDEX])]) for i in targets]
     
     return dict(
         input_ids=input_ids,

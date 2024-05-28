@@ -3,6 +3,9 @@ import json
 import os
 
 import openai
+from openai import OpenAI
+client = OpenAI()
+
 import time
 
 NUM_SECONDS_TO_SLEEP = 0.5
@@ -11,7 +14,7 @@ NUM_SECONDS_TO_SLEEP = 0.5
 def get_eval(content: str, max_tokens: int):
     while True:
         try:
-            response = openai.ChatCompletion.create(
+            response = client.chat.completions.create(
                 model='gpt-4-0314',
                 messages=[{
                     'role': 'system',
@@ -30,7 +33,7 @@ def get_eval(content: str, max_tokens: int):
             print(e)
         time.sleep(NUM_SECONDS_TO_SLEEP)
 
-    return response['choices'][0]['message']['content']
+    return response.choices[0].message.content #response['choices'][0]['message']['content']
 
 
 def parse_score(review):

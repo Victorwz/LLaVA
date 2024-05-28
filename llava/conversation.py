@@ -72,7 +72,7 @@ class Conversation:
                 else:
                     ret += role
         elif self.sep_style == SeparatorStyle.PHI:
-            ret = ""
+            ret = self.system + self.sep
             for role, message in messages:
                 if message:
                     if type(message) is tuple:
@@ -391,8 +391,19 @@ Answer the questions.""",
     sep="<|im_end|>",
 )
 
-conv_phi_3_instruct = Conversation(
+conv_phi_3_instruct_no_system = Conversation(
     system="",
+    roles=("<|user|>\n", "<|assistant|>\n"),
+    version="phi",
+    messages=(),
+    offset=0,
+    sep_style=SeparatorStyle.PHI,
+    sep="<|end|>\n",
+)
+
+conv_phi_3_instruct = Conversation(
+    system="<|system|>A chat between a curious human and an artificial intelligence assistant. "
+           "The assistant gives helpful, detailed, and polite answers to the human's questions.",
     roles=("<|user|>\n", "<|assistant|>\n"),
     version="phi",
     messages=(),
